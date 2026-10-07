@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+study_hub.db
+.streamlit/secrets.toml
+.env

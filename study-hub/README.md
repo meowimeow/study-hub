@@ -1,77 +1,72 @@
 # Study Hub
 
-과목별 시험 자료를 올리면 Gemini가 자동으로 중간/기말고사 대비 요약본을 만들어주고,
-"연구실" 탭에서는 논문이나 현재 진행 중인 연구 자료를 올리면 정리용 요약본을 만들어주는 개인용 웹앱입니다.
+할 일이 많고 생각이 자주 바뀌어서 머릿속이 꼬일 때, 풀어서 **지금 할 일 하나만** 보여주는 앱입니다.
+아이폰, 맥, 윈도우 어디서든 브라우저로 같은 주소를 열면 같은 내용이 보여요.
 
-브라우저로 접속하는 웹앱이라 **아이폰, 맥, 윈도우 어디서든 같은 주소로 접속**하면 동일한 데이터(과목, 업로드한 자료, 요약본)를 볼 수 있습니다.
+## 화면
 
-## 1. Gemini API 키 발급
+| 화면 | 하는 일 |
+| --- | --- |
+| 지금 | 할 일 하나만 보여줘요. 끝냈어요 / 더 작게 나누기 / 나중에. 딴 생각이 나면 바로 아래 칸에 적어 두고 돌아와요 |
+| 쏟아내기 | 머릿속에 있는 걸 순서 없이 적으면 Gemini가 할 일로 나누고, 마감이 부딪히는 곳을 짚어줘요 |
+| 주차장 | 하던 일 중에 떠오른 딴 생각을 모아 두는 곳. 나중에 한 번에 할 일로 정리해요 |
+| 마무리 | 오늘 끝낸 일, 내일 먼저 볼 3가지 |
+| 자료 | 강의자료/논문 요약 (예전 기능) |
 
-1. https://aistudio.google.com/app/apikey 접속 (구글 계정 로그인)
-2. "Create API key" 클릭 → 생성된 키 복사
+'지금'에 뜨는 순서는 규칙으로 정해져 있어요: 오늘/내일로 정해 둔 것 → 오늘 '나중에'를 덜 누른 것 → 마감이 가까운 것 → 급한 것.
+AI는 쏟아낸 글을 할 일로 나눌 때와 '더 작게 나누기'에서만 쓰여요.
 
-무료 등급으로도 충분히 사용 가능합니다.
+## 여는 방법
 
-## 2. 로컬(맥/윈도우)에서 실행하기
+이미 Streamlit Cloud에 올라가 있으니, 이 저장소(`main`)에 변경이 올라오면 앱이 자동으로 다시 배포돼요.
+주소를 열기만 하면 됩니다. 아이폰은 사파리에서 열고 공유 → '홈 화면에 추가'를 누르면 아이콘이 생겨요.
 
-터미널(맥) 또는 명령 프롬프트/PowerShell(윈도우)에서:
+내 컴퓨터에서 직접 띄워 보려면:
 
 ```bash
 cd study-hub
-python3 -m venv venv
-source venv/bin/activate        # 윈도우는: venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-API 키 설정 (둘 중 하나):
-
-- `.streamlit/secrets.toml.example` 파일을 `.streamlit/secrets.toml` 로 복사하고 안의 키 값을 본인 키로 교체
-- 또는 앱 실행 후 왼쪽 사이드바에 직접 키를 입력 (세션 동안만 유지됨)
-
-앱 실행:
-
-```bash
 streamlit run app.py
 ```
 
-실행하면 자동으로 브라우저가 열리고 `http://localhost:8501` 로 접속됩니다.
-같은 와이파이에 연결된 아이폰에서 보려면 터미널에 출력되는 "Network URL"
-(예: `http://192.168.x.x:8501`)로 접속하면 됩니다. 단, 컴퓨터를 끄면 접속이 끊깁니다.
+## Secrets (Streamlit Cloud → 앱 → Settings → Secrets)
 
-## 3. 아이폰/맥/윈도우 어디서든 접속되게 배포하기 (권장)
+```toml
+GEMINI_API_KEY = "Gemini 키"
+SUPABASE_URL = "https://xxxx.supabase.co"
+SUPABASE_KEY = "Supabase secret 키"
+APP_PASSWORD = "원하면 비밀번호 (없으면 생략)"
+```
 
-컴퓨터를 켜두지 않아도 항상 같은 주소로 접속하려면 **Streamlit Community Cloud**(무료)에 올리는 것을 추천합니다.
+- `GEMINI_API_KEY`는 https://aistudio.google.com/app/apikey 에서 무료로 받아요.
+- `SUPABASE_*`를 넣지 않으면 앱이 **임시 저장**으로 동작해요. 앱이 재시작되면 할 일이 사라질 수 있어요.
+- 이 저장소는 코드만 올라가요. 할 일과 메모는 GitHub에 올라가지 않아요.
 
-1. 이 `study-hub` 폴더를 GitHub 저장소로 push
-2. https://share.streamlit.io 접속 → GitHub 계정으로 로그인
-3. "New app" → 방금 만든 저장소, 브랜치, `app.py` 선택 → Deploy
-4. 배포 후 "Settings → Secrets"에 아래 내용 추가:
-   ```
-   GEMINI_API_KEY = "본인의_Gemini_API_키"
-   ```
-5. 발급된 주소(예: `https://study-hub-xxxx.streamlit.app`)를 아이폰 홈 화면에 추가하면
-   앱처럼 아이콘을 눌러 바로 접속할 수 있습니다 (Safari에서 열기 → 공유 → "홈 화면에 추가").
+## Supabase 연결 (할 일이 사라지지 않게)
 
-이렇게 배포하면 맥, 윈도우, 아이폰 모두 같은 주소 하나로 접속되고 데이터도 공유됩니다.
+1. https://supabase.com 에서 무료로 가입하고 New project를 만들어요.
+2. 왼쪽 메뉴 **SQL Editor** → New query에 `schema.sql` 내용을 통째로 붙여넣고 Run을 한 번 눌러요.
+3. **Project Settings → API**에서 `Project URL`과 `secret` 키(또는 `service_role` 키)를 복사해요.
+   `publishable`/`anon` 키가 아니라 **secret** 키예요. 이 키는 Secrets에만 넣고 다른 곳에 붙여넣지 마세요.
+4. 위 Secrets에 `SUPABASE_URL`, `SUPABASE_KEY`를 넣고 저장하면 앱이 다시 시작돼요.
+5. 앱의 '마무리' → '연결 상태'에서 "Supabase에 저장 중"이라고 나오면 끝이에요.
 
-> 참고: Streamlit Community Cloud는 앱이 오래 쉬면(inactive) 저장 공간이 초기화될 수 있습니다.
-> 중요한 자료/요약본은 주기적으로 "원본 파일 다운로드" 버튼으로 백업해두는 것을 권장합니다.
-> 더 안정적으로 데이터를 영구 보관하려면 나중에 Supabase/Google Drive 연동으로 확장할 수 있습니다 (요청 시 추가 가능).
+## 내 앱을 나만 보게 하기
 
-## 4. 사용법
+앱 주소를 아는 사람은 누구나 열 수 있어요. 둘 중 하나를 추천해요.
 
-- **📖 과목별 시험 자료** 탭: 과목 추가 → 강의자료(PDF/DOCX/PPTX/TXT) 업로드 → "요약본 생성" 클릭 → 시험 대비 요약본 자동 생성
-- **🔬 연구실** 탭: "논문 정리" 또는 "진행상황 정리" 선택 → 자료 업로드 → 연구 정리용 요약본 자동 생성
-- 각 요약본은 펼쳐서 확인할 수 있고, 원본 파일 다운로드/삭제도 가능합니다.
+- Streamlit Cloud의 앱 설정 → Sharing에서 내 이메일만 보도록 제한하기 (한 번 로그인하면 계속 유지돼요)
+- 또는 Secrets에 `APP_PASSWORD`를 넣기 (열 때마다 비밀번호를 입력해요)
 
-## 폴더 구조
+## 폴더
 
 ```
 study-hub/
-├── app.py              # Streamlit 메인 앱 (탭 구성, UI)
-├── db.py               # SQLite 저장/조회 (과목, 업로드 파일, 요약본)
-├── extractor.py        # PDF/DOCX/PPTX/TXT → 텍스트 추출
-├── gemini_helper.py     # Gemini 호출 + 시험용/연구실용 프롬프트
-├── requirements.txt
-└── .streamlit/secrets.toml.example
+├── app.py          화면과 흐름
+├── ai.py           Gemini 호출 (정리, 쪼개기, 자료 요약)
+├── store.py        저장소 (Supabase 또는 임시 SQLite)와 순서 규칙
+├── style.py        색, 글꼴, 실 그림
+├── extractor.py    PDF/DOCX/PPTX에서 글 뽑기
+├── schema.sql      Supabase에 한 번 실행할 표 정의
+└── icon.png
 ```
