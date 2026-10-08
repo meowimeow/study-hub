@@ -13,6 +13,7 @@ import html
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 st.set_page_config(
@@ -72,6 +73,15 @@ def row_html(t: dict) -> str:
     if due:
         sub += f' &nbsp; <span class="{"due" if urgent else ""}">{h(due)}</span>'
     return f'<div class="row">{h(t["title"])}<span class="sub">{sub}</span></div>'
+
+
+# ------------------------------------------------------------------ 홈 화면 아이콘
+
+def install_icon():
+    """아이폰 홈 화면 아이콘/이름을 심는다. 화면에는 아무것도 그리지 않는다."""
+    st.html("<style>.st-key-pwa{position:absolute;width:0;height:0;overflow:hidden}</style>")
+    with st.container(key="pwa"):
+        components.html(style.install_icon_script(), height=0)
 
 
 # ------------------------------------------------------------------ 잠금
@@ -359,6 +369,7 @@ def screen_docs():
 
 # ------------------------------------------------------------------ 시작
 
+install_icon()
 gate()
 
 with st.container(key="css"):

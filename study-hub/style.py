@@ -141,3 +141,33 @@ def beads(n: int) -> str:
         f"{dots}</svg>"
     )
     return _img(svg, f"오늘 끝낸 일 {n}개" if n else "오늘 끝낸 일 없음")
+
+
+def install_icon_script() -> str:
+    """아이폰 '홈 화면에 추가'가 읽는 아이콘과 이름을 심는 스크립트.
+
+    Streamlit Cloud 는 앱을 바깥 페이지(셸) 안의 iframe 으로 보여주기 때문에,
+    접근할 수 있는 위쪽 문서를 모두 찾아서 같은 태그를 넣는다. 막혀 있으면 조용히 넘어간다.
+    """
+    return """<script>
+(function () {
+  var docs = [], w = window;
+  for (var i = 0; i < 5; i++) {
+    try { var p = w.parent; if (!p || p === w) break; docs.push(p.document); w = p; } catch (e) { break; }
+  }
+  docs.forEach(function (doc) {
+    try {
+      var origin = doc.defaultView.location.origin;
+      doc.querySelectorAll('link[rel="apple-touch-icon"], meta[name="apple-mobile-web-app-title"], meta[name="apple-mobile-web-app-capable"]')
+        .forEach(function (n) { n.remove(); });
+      var link = doc.createElement('link');
+      link.rel = 'apple-touch-icon'; link.setAttribute('sizes', '180x180');
+      link.href = origin + '/app/static/apple-touch-icon.png';
+      doc.head.appendChild(link);
+      [['apple-mobile-web-app-title', 'Study Hub'], ['apple-mobile-web-app-capable', 'yes']].forEach(function (kv) {
+        var m = doc.createElement('meta'); m.name = kv[0]; m.content = kv[1]; doc.head.appendChild(m);
+      });
+    } catch (e) {}
+  });
+})();
+</script>"""
