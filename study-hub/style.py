@@ -26,10 +26,11 @@ html, body, .stApp, [data-testid="stAppViewContainer"] { background: var(--vellu
 .stApp, [data-testid="stMarkdownContainer"], button, input, textarea, label, [data-baseweb] { font-family: var(--sans); }
 
 .st-key-css { display: none; }
-[data-testid="stHeader"] { background: transparent; }
+[data-testid="stHeader"] { background: transparent; pointer-events: none; }
+[data-testid="stStatusWidget"] { display: none; }
 [data-testid="stToolbar"], [data-testid="stDecoration"], footer, #MainMenu { display: none !important; }
 
-.block-container { max-width: 520px; padding: 1.25rem 1.25rem 7.5rem; }
+.block-container { max-width: 520px; padding: 4.75rem 1.25rem 5rem; }
 
 /* ---- 글자 ---- */
 .screen-title { font: 700 1.4rem/1.45 var(--serif); margin: 0 0 .35rem; word-break: keep-all; }
@@ -77,17 +78,17 @@ button[data-testid^="stBaseButton"]:focus-visible { outline: 3px solid var(--thr
 [data-testid="stExpander"] details { border: none !important; border-top: 1px solid var(--rule) !important; border-radius: 0 !important; background: transparent !important; }
 [data-testid="stExpander"] summary { padding: .8rem 0; }
 
-/* ---- 아래 메뉴 ---- */
-.st-key-nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 999; background: var(--paper);
-  border-top: 1px solid var(--rule); padding: 0 .25rem env(safe-area-inset-bottom); }
+/* ---- 위 메뉴: 아래에는 Streamlit 의 'Manage app' 버튼이 떠서 메뉴를 가려요 ---- */
+.st-key-nav { position: fixed; left: 0; right: 0; top: 0; z-index: 999; background: var(--paper);
+  border-bottom: 1px solid var(--rule); padding: env(safe-area-inset-top) .25rem 0; }
 .st-key-nav .stElementContainer { width: 100% !important; }
 .st-key-nav [data-testid="stWidgetLabel"] { display: none; }
 .st-key-nav [role="radiogroup"] { display: flex; width: 100%; max-width: 520px; margin: 0 auto; gap: 0; }
-.st-key-nav button[role="radio"] { flex: 1 1 0; min-width: 0; min-height: 3.4rem; border: none !important; border-radius: 0 !important;
-  border-top: 2px solid transparent !important; background: transparent !important; color: var(--graphite) !important;
+.st-key-nav button[role="radio"] { flex: 1 1 0; min-width: 0; min-height: 3rem; border: none !important; border-radius: 0 !important;
+  border-bottom: 2px solid transparent !important; background: transparent !important; color: var(--graphite) !important;
   padding: 0 !important; white-space: nowrap; }
 .st-key-nav button[role="radio"] * { font-size: .9rem; overflow: visible !important; text-overflow: clip !important; white-space: nowrap; }
-.st-key-nav button[role="radio"][aria-checked="true"] { color: var(--thread) !important; border-top-color: var(--thread) !important; }
+.st-key-nav button[role="radio"][aria-checked="true"] { color: var(--thread) !important; border-bottom-color: var(--thread) !important; }
 .st-key-nav button[role="radio"][aria-checked="true"] * { font-weight: 600; }
 </style>
 """
