@@ -83,7 +83,10 @@ def _generate(prompt: str, schema):
             raise AIError("Gemini 키가 맞지 않아요. 키를 다시 확인해 주세요.") from e
         if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
             raise AIError("Gemini 무료 사용량을 잠시 다 썼어요. 1분쯤 뒤에 다시 눌러 주세요.") from e
-        raise AIError("정리하지 못했어요. 잠시 뒤에 다시 시도해 주세요.") from e
+        if "503" in msg or "UNAVAILABLE" in msg or "overloaded" in msg:
+            raise AIError("Gemini가 지금 붐벼요. 30초쯤 뒤에 다시 눌러 주세요.") from e
+        # 원인을 알 수 있게 짧은 내용을 함께 보여준다 (키 값은 들어 있지 않다).
+        raise AIError(f"정리하지 못했어요. ({type(e).__name__}: {msg[:160]})") from e
 
 
 def _valid_date(s):
