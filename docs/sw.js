@@ -1,5 +1,5 @@
 // 화면 파일을 기기에 담아 두어, 인터넷이 없어도 앱이 열리게 한다. 데이터는 여기에 두지 않는다.
-const CACHE = 'study-hub-v2';
+const CACHE = 'study-hub-v3';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting())); });

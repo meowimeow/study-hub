@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from config import get_secret
 import store
 
-MODEL = "gemini-2.5-flash"
+MODEL = "gemini-3.8-flash"
 WEEKDAYS = "월화수목금토일"
 
 

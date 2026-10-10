@@ -4,7 +4,7 @@
 
 const SCREENS = ['지금', '쏟아내기', '주차장', '마무리', '자료'];
 const LS_STATE = 'sh_state_v1', LS_CFG = 'sh_settings_v1', LS_SCREEN = 'sh_screen';
-const MODEL = 'gemini-2.5-flash';
+const MODEL = 'gemini-3.8-flash';
 const WEEKDAYS = '월화수목금토일';
 const PLACEHOLDER = '예: 열역학 중간이 다음 주 수요일인데 아직 3단원도 못 봤고, 금요일까지 보고서 써야 하고, 연구실 미팅 자료도 만들어야 하는데 갑자기 자격증도 따야 하나 싶고…';
 
