@@ -253,12 +253,17 @@ revoke all on function sh_get(text) from public;
 revoke all on function sh_put(text, jsonb) from public;
 grant execute on function sh_get(text), sh_put(text, jsonb) to anon, authenticated;`;
 
+// 대시보드 주소(supabase.com/dashboard/project/<코드>)를 넣어도 API 주소로 바꿔 준다.
+function sbBase() {
+  const m = CFG.sbUrl.match(/supabase\.com\/dashboard\/project\/([a-z0-9]+)/i);
+  return (m ? `https://${m[1]}.supabase.co` : CFG.sbUrl).replace(/\/+$/, '');
+}
 const syncOn = () => /^https:\/\//.test(CFG.sbUrl) && CFG.sbKey && CFG.code.length >= 16;
 async function rpc(fn, body) {
   const headers = { apikey: CFG.sbKey, 'Content-Type': 'application/json' };
   if (CFG.sbKey.startsWith('eyJ')) headers.Authorization = 'Bearer ' + CFG.sbKey;
   let r;
-  try { r = await fetch(`${CFG.sbUrl.replace(/\/+$/, '')}/rest/v1/rpc/${fn}`, { method: 'POST', headers, body: JSON.stringify(body) }); }
+  try { r = await fetch(`${sbBase()}/rest/v1/rpc/${fn}`, { method: 'POST', headers, body: JSON.stringify(body) }); }
   catch (e) { throw new Error('Supabase에 연결하지 못했어요. 주소를 확인해 주세요.'); }
   if (!r.ok) {
     let m = ''; try { m = (await r.json()).message || ''; } catch (e) { /* ignore */ }
