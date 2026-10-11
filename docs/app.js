@@ -32,7 +32,18 @@ const ui = { result: null, busy: null, error: null, docKind: 'subject', draft: {
 let storageOk = true;
 
 function saveCfg() { lsSet(LS_CFG, JSON.stringify(CFG)); }
+const COLS = ['tasks', 'dumps', 'parking', 'docs'];
+let snap = new Map();
+const strip = (x) => { const { u, ...r } = x; return JSON.stringify(r); };
+function resnap() { snap = new Map(); COLS.forEach((k) => S[k].forEach((it) => snap.set(it.id, strip(it)))); }
+// 바뀐 항목에만 '바뀐 시각(u)'을 찍는다. 기기끼리 합칠 때 항목마다 더 늦게 바뀐 쪽이 이긴다.
+function stamp() {
+  const now = Date.now();
+  COLS.forEach((k) => S[k].forEach((it) => { const j = strip(it); if (snap.get(it.id) !== j) { it.u = now; snap.set(it.id, strip(it)); } }));
+}
+resnap();
 function commit() {
+  stamp();
   S.rev = Date.now();
   storageOk = lsSet(LS_STATE, JSON.stringify(S));
   schedulePush();
@@ -274,28 +285,50 @@ async function rpc(fn, body) {
   const t = await r.text();
   return t ? JSON.parse(t) : null;
 }
-let pushTimer = null, pushing = false, pushAgain = false;
-function schedulePush() { if (!syncOn()) return; clearTimeout(pushTimer); pushTimer = setTimeout(push, 1500); }
-async function push() {
-  if (!syncOn()) return;
-  if (pushing) { pushAgain = true; return; }
-  pushing = true;
-  try { await rpc('sh_put', { p_code: CFG.code, p_data: S }); ui.sync = '동기화됨 ' + new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }); ui.syncErr = ''; }
-  catch (e) { ui.syncErr = e.message; }
-  pushing = false;
-  if (pushAgain) { pushAgain = false; schedulePush(); }
-  if (screen === '마무리') render();
+function merge(a, b) {
+  const out = emptyState();
+  out.rev = Math.max(a.rev || 0, b.rev || 0);
+  COLS.forEach((k) => {
+    const m = new Map();
+    a[k].forEach((it) => m.set(it.id, it));
+    b[k].forEach((it) => { const cur = m.get(it.id); if (!cur || (it.u || 0) > (cur.u || 0)) m.set(it.id, it); });
+    out[k] = Array.from(m.values()).sort((x, y) => (x.created_at || '').localeCompare(y.created_at || '') || (x.id < y.id ? -1 : 1));
+  });
+  return out;
 }
-async function pull() {
+const sig = (x) => JSON.stringify(COLS.map((k) => x[k]));
+let syncTimer = null, syncing = false, syncQueued = false;
+const clock = () => new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+function schedulePush() { if (!syncOn()) return; clearTimeout(syncTimer); syncTimer = setTimeout(sync, 1200); }
+// 받아 오고 → 항목별로 합치고 → 다시 올린다. 어느 기기에서 먼저 하든 같은 결과가 된다.
+async function sync() {
   if (!syncOn()) return;
+  if (syncing) { syncQueued = true; return; }
+  syncing = true;
   try {
-    const remote = await rpc('sh_get', { p_code: CFG.code });
-    if (remote && Number(remote.rev) > S.rev) {
-      S = normalize(remote); storageOk = lsSet(LS_STATE, JSON.stringify(S));
-      ui.sync = '다른 기기의 내용을 가져왔어요'; ui.syncErr = ''; render();
-    } else if (!remote || Number(remote.rev) < S.rev) { await push(); }
-    else { ui.sync = '동기화됨'; ui.syncErr = ''; if (screen === '마무리') render(); }
+    const raw = await rpc('sh_get', { p_code: CFG.code });
+    const remote = merge(emptyState(), normalize(raw));
+    const merged = merge(S, remote);
+    const changed = sig(merged) !== sig(merge(emptyState(), S));
+    if (changed) { S = merged; S.rev = Date.now(); resnap(); storageOk = lsSet(LS_STATE, JSON.stringify(S)); }
+    if (!raw || sig(merged) !== sig(remote)) await rpc('sh_put', { p_code: CFG.code, p_data: S });
+    ui.sync = (changed ? '다른 기기의 내용을 합쳤어요 ' : '동기화됨 ') + clock(); ui.syncErr = '';
+    if (changed || screen === '마무리') render();
   } catch (e) { ui.syncErr = e.message; if (screen === '마무리') render(); }
+  syncing = false;
+  if (syncQueued) { syncQueued = false; schedulePush(); }
+}
+
+// 연결 코드: 이 기기의 연결 값을 한 줄로 묶은 것. 새 기기에는 이것 하나만 붙여 넣으면 된다.
+const b64e = (o) => btoa(unescape(encodeURIComponent(JSON.stringify(o)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const b64d = (t) => JSON.parse(decodeURIComponent(escape(atob(t.replace(/-/g, '+').replace(/_/g, '/')))));
+const connectCode = () => 'SH1.' + b64e({ g: CFG.gemini, u: sbBase(), k: CFG.sbKey, c: CFG.code });
+function applyConnectCode(text) {
+  const m = String(text).trim().match(/SH1\.([A-Za-z0-9_-]+)/);
+  if (!m) throw new Error('연결 코드가 아니에요. SH1. 으로 시작하는 한 줄을 통째로 붙여 넣어 주세요.');
+  const o = b64d(m[1]);
+  CFG.gemini = o.g || CFG.gemini; CFG.sbUrl = o.u || ''; CFG.sbKey = o.k || ''; CFG.code = o.c || '';
+  saveCfg();
 }
 
 /* ------------------------------------------------------------ 조각 */
@@ -327,6 +360,7 @@ const busyLabel = (idle) => (ui.busy ? `<span class="spin"></span>${esc(ui.busy)
 function viewNow() {
   const tasks = openTasks();
   let out = straight();
+  if (!CFG.gemini && !syncOn()) out += '<div class="note">다른 기기에서 쓰던 중이라면 마무리 → 연결과 설정에서 연결 코드를 붙여 넣어 주세요. 처음이라면 같은 곳에서 Gemini 키부터 넣어요.</div><div style="height:1rem"></div>';
   if (!tasks.length) {
     return out + '<p class="screen-title">할 일이 비어 있어요</p><p class="lede">머릿속에 있는 걸 순서 없이 쏟아내면, 할 일로 나눠서 하나만 보여드려요.</p><button class="btn primary" data-act="go" data-to="쏟아내기">쏟아내러 가기</button>';
   }
@@ -397,7 +431,11 @@ function viewSettings() {
 <label class="field" for="k-gem">Gemini 키 (이 기기에만 저장돼요)</label>
 <input id="k-gem" type="password" data-cfg="gemini" value="${esc(CFG.gemini)}" autocomplete="off" autocapitalize="off" spellcheck="false">
 <hr style="border:0;border-top:1px solid var(--rule);margin:1.2rem 0">
-<p class="quiet"><b>기기끼리 맞추기 (선택)</b><br>폰과 컴퓨터에 같은 세 값을 넣으면 같은 데이터가 보여요.</p>
+<p class="quiet"><b>기기끼리 맞추기</b><br>이미 연결된 기기에서 "연결 코드 복사"를 누르고, 새 기기에서 아래 칸에 붙여 넣으면 끝나요. 키와 코드가 다 들어 있으니 비밀번호처럼 다뤄 주세요.</p>
+<div class="stack"><button class="btn" data-act="copycode" ${syncOn() || CFG.gemini ? '' : 'disabled'}>연결 코드 복사</button>
+${ui.showCode ? `<textarea readonly style="min-height:5rem;font-size:.8rem" aria-label="연결 코드" onfocus="this.select()">${esc(connectCode())}</textarea><p class="quiet">복사가 안 돼서 보여드려요. 꾹 눌러 전체 선택 후 복사하세요.</p>` : ''}
+<input id="k-conn" type="text" data-connect placeholder="여기에 연결 코드 붙여 넣기 (SH1.…)" aria-label="연결 코드 붙여 넣기" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+<details><summary>직접 입력하기 (처음 한 번)</summary><div class="body">
 <label class="field" for="k-url">Supabase 주소 (https://….supabase.co)</label>
 <input id="k-url" type="url" data-cfg="sbUrl" value="${esc(CFG.sbUrl)}" autocomplete="off" autocapitalize="off" spellcheck="false">
 <label class="field" for="k-key">Supabase publishable 키</label>
@@ -405,6 +443,7 @@ function viewSettings() {
 <label class="field" for="k-code">동기화 코드 (16자 이상, 비밀번호처럼 쓰여요)</label>
 <input id="k-code" type="text" data-cfg="code" value="${esc(CFG.code)}" autocomplete="off" autocapitalize="off" spellcheck="false">
 <div class="pair"><button class="btn" data-act="newcode">코드 만들기</button><button class="btn primary" data-act="syncnow">지금 맞추기</button></div>
+</div></details>
 ${syncState}
 <details><summary>처음 한 번 실행할 SQL</summary><div class="body"><p class="quiet">Supabase의 SQL Editor에 붙여 넣고 Run 하세요.</p><pre class="sql">${esc(SYNC_SQL)}</pre><div style="height:.6rem"></div><button class="btn small" data-act="copysql">SQL 복사</button></div></details>
 <hr style="border:0;border-top:1px solid var(--rule);margin:1.2rem 0">
@@ -436,7 +475,7 @@ function viewDocs() {
   out += `<details style="margin-top:0;border-top:0"><summary style="padding-top:0">글을 직접 붙여 넣기</summary><div class="body"><form data-form="doctext"><textarea name="text" style="min-height:140px" placeholder="강의 내용이나 논문 초록을 붙여 넣어요" aria-label="붙여 넣을 글"></textarea><button class="btn" type="submit" ${ui.busy ? 'disabled' : ''}>요약하기</button></form></div></details>`;
   if (ui.busy) out += `<p class="quiet"><span class="spin"></span>${esc(ui.busy)}</p>`;
   out += errBox();
-  const docs = S.docs.filter((d) => d.kind === ui.docKind).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const docs = S.docs.filter((d) => !d.deleted && d.kind === ui.docKind).sort((a, b) => b.created_at.localeCompare(a.created_at));
   if (!docs.length) out += '<p class="quiet" style="margin-top:1rem">아직 요약한 자료가 없어요.</p>';
   out += docs.map((d) => `<details><summary>${esc(`${d.subject || ''} ${d.filename}`.trim())}</summary><div class="body"><div class="md">${mdToHtml(d.summary)}</div><div style="height:.6rem"></div><button class="btn small" data-act="deldoc" data-id="${d.id}">지우기</button></div></details>`).join('');
   return out;
@@ -533,13 +572,17 @@ const clickActions = {
     catch (e) { ui.busy = null; ui.error = e instanceof AIError ? e.message : '나누지 못했어요. 잠시 뒤에 다시 시도해 주세요.'; render(); }
   },
   retry: () => { const p = S.dumps.filter((d) => d.status === 'pending'); if (p.length && !ui.busy) runSort(p.map((d) => d.raw).join('\n\n'), { dumpIds: p.map((d) => d.id) }); },
-  delpark: (el) => { S.parking = S.parking.filter((p) => p.id !== el.dataset.id); commit(); },
+  delpark: (el) => { const p = S.parking.find((x) => x.id === el.dataset.id); if (p) { p.status = 'deleted'; commit(); } },
   sortpark: () => { const items = S.parking.filter((p) => p.status === 'open'); if (items.length && !ui.busy) runSort(items.map((i) => i.text).join('\n'), { source: 'parking', parkingIds: items.map((i) => i.id) }); },
   plan: () => { planTomorrow(3); commit(); toast('내일 먼저 볼 일을 정했어요'); },
   dockind: (el) => { ui.docKind = el.dataset.kind; ui.error = null; render(); },
-  deldoc: (el) => { S.docs = S.docs.filter((d) => d.id !== el.dataset.id); commit(); },
+  deldoc: (el) => { const d = S.docs.find((x) => x.id === el.dataset.id); if (d) { d.deleted = true; commit(); } },
   newcode: () => { const a = new Uint8Array(12); crypto.getRandomValues(a); CFG.code = Array.from(a, (b) => b.toString(16).padStart(2, '0')).join(''); saveCfg(); render(); },
-  syncnow: () => { ui.sync = ''; ui.syncErr = ''; if (!syncOn()) { ui.syncErr = '주소(https://로 시작), 키, 16자 이상의 코드를 모두 넣어 주세요.'; render(); } else { ui.sync = '맞추는 중이에요…'; render(); pull(); } },
+  syncnow: () => { ui.sync = ''; ui.syncErr = ''; if (!syncOn()) { ui.syncErr = '주소(https://로 시작), 키, 16자 이상의 코드를 모두 넣어 주세요.'; render(); } else { ui.sync = '맞추는 중이에요…'; render(); sync(); } },
+  copycode: () => {
+    const code = connectCode();
+    (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(() => toast('연결 코드를 복사했어요'), () => { ui.showCode = true; render(); });
+  },
   copysql: () => { (navigator.clipboard ? navigator.clipboard.writeText(SYNC_SQL) : Promise.reject()).then(() => toast('SQL을 복사했어요'), () => toast('복사하지 못했어요. 직접 선택해서 복사해 주세요.')); },
   export: () => {
     const a = document.createElement('a');
@@ -559,14 +602,17 @@ document.addEventListener('input', (e) => {
 });
 document.addEventListener('change', async (e) => {
   const t = e.target;
-  if (t.dataset.cfg && t.dataset.cfg !== 'gemini') { ui.sync = ''; ui.syncErr = ''; if (syncOn()) pull(); else render(); }
-  if (t.dataset.cfg === 'gemini') render();
+  if (t.dataset.cfg && t.dataset.cfg !== 'gemini') { ui.sync = ''; ui.syncErr = ''; if (syncOn()) sync(); }
+  if (t.matches('[data-connect]') && t.value.trim()) {
+    try { applyConnectCode(t.value); t.value = ''; ui.sync = ''; ui.syncErr = ''; ui.showCode = false; toast('연결했어요'); render(); sync(); }
+    catch (err) { ui.syncErr = err.message; render(); }
+  }
   if (t.matches('[data-doc]') && t.files.length) { const fs = Array.from(t.files); t.value = ''; handleFiles(fs); }
   if (t.matches('[data-import]') && t.files.length) {
     try {
       const data = normalize(JSON.parse(await t.files[0].text()));
       if (!confirm('이 기기의 내용을 파일 내용으로 덮어쓸까요?')) return;
-      S = data; commit(); toast('가져왔어요');
+      snap = new Map(); S = data; commit(); toast('가져왔어요');
     } catch (err) { toast('파일을 읽지 못했어요'); }
   }
 });
@@ -591,9 +637,12 @@ document.addEventListener('submit', (e) => {
   }
 });
 
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pull(); });
-window.addEventListener('online', () => { pull(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync(); });
+window.addEventListener('online', () => { sync(); });
+window.addEventListener('focus', () => { sync(); });
+setInterval(() => { if (document.visibilityState === 'visible') sync(); }, 45000);
+try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
 
 render();
-pull();
+sync();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
