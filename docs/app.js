@@ -2,7 +2,7 @@
 /* Study Hub — 서버 없이 기기에서 도는 앱.
    데이터는 이 기기에 저장되고, 원하면 Supabase로 기기끼리 맞춘다. 키는 기기에만 둔다. */
 
-const SCREENS = ['지금', '쏟아내기', '주차장', '마무리', '자료'];
+const SCREENS = ['지금', '쏟아내기', '주차장', '마무리', '자료', '연구실'];
 const LS_STATE = 'sh_state_v1', LS_CFG = 'sh_settings_v1', LS_SCREEN = 'sh_screen';
 const MODEL = 'gemini-3.8-flash';
 const WEEKDAYS = '월화수목금토일';
@@ -13,12 +13,12 @@ const PLACEHOLDER = '예: 열역학 중간이 다음 주 수요일인데 아직 
 const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } };
 
-function emptyState() { return { rev: 0, tasks: [], dumps: [], parking: [], docs: [] }; }
+function emptyState() { return { rev: 0, tasks: [], dumps: [], parking: [], docs: [], papers: [], cards: [], cases: [] }; }
 function normalize(s) {
   const o = emptyState();
   if (s && typeof s === 'object') {
     o.rev = Number(s.rev) || 0;
-    for (const k of ['tasks', 'dumps', 'parking', 'docs']) o[k] = Array.isArray(s[k]) ? s[k] : [];
+    for (const k of ['tasks', 'dumps', 'parking', 'docs', 'papers', 'cards', 'cases']) o[k] = Array.isArray(s[k]) ? s[k] : [];
   }
   return o;
 }
@@ -28,11 +28,11 @@ function loadCfg() { try { return Object.assign({ gemini: '', sbUrl: '', sbKey: 
 let S = loadState();
 let CFG = loadCfg();
 let screen = SCREENS.includes(lsGet(LS_SCREEN)) ? lsGet(LS_SCREEN) : '지금';
-const ui = { result: null, busy: null, error: null, docKind: 'subject', draft: {}, sync: '', syncErr: '' };
+const ui = { lab: ['papers', 'quiz', 'cases'].includes(lsGet('sh_lab')) ? lsGet('sh_lab') : 'papers', paper: null, caseId: null, quiz: null, paperView: 'list', caseView: 'list', result: null, busy: null, error: null, docKind: 'subject', draft: {}, sync: '', syncErr: '' };
 let storageOk = true;
 
 function saveCfg() { lsSet(LS_CFG, JSON.stringify(CFG)); }
-const COLS = ['tasks', 'dumps', 'parking', 'docs'];
+const COLS = ['tasks', 'dumps', 'parking', 'docs', 'papers', 'cards', 'cases'];
 let snap = new Map();
 const strip = (x) => { const { u, ...r } = x; return JSON.stringify(r); };
 function resnap() { snap = new Map(); COLS.forEach((k) => S[k].forEach((it) => snap.set(it.id, strip(it)))); }
@@ -313,7 +313,7 @@ async function sync() {
     if (changed) { S = merged; S.rev = Date.now(); resnap(); storageOk = lsSet(LS_STATE, JSON.stringify(S)); }
     if (!raw || sig(merged) !== sig(remote)) await rpc('sh_put', { p_code: CFG.code, p_data: S });
     ui.sync = (changed ? '다른 기기의 내용을 합쳤어요 ' : '동기화됨 ') + clock(); ui.syncErr = '';
-    if (changed || screen === '마무리') render();
+    if (changed || screen === '마무리') renderSoon();
   } catch (e) { ui.syncErr = e.message; if (screen === '마무리') render(); }
   syncing = false;
   if (syncQueued) { syncQueued = false; schedulePush(); }
@@ -483,8 +483,16 @@ function viewDocs() {
 
 /* ------------------------------------------------------------ 그리기 */
 
-const VIEWS = { 지금: viewNow, 쏟아내기: viewDump, 주차장: viewParking, 마무리: viewWrap, 자료: viewDocs };
+const VIEWS = { 지금: viewNow, 쏟아내기: viewDump, 주차장: viewParking, 마무리: viewWrap, 자료: viewDocs, 연구실: viewLab };
 const openState = new Set();
+// 글을 쓰는 중이면 화면을 다시 그리지 않고, 입력칸에서 나갈 때 그린다.
+let dirty = false;
+function renderSoon() {
+  const a = document.activeElement;
+  if (a && a.closest && a.closest('#view') && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) { dirty = true; return; }
+  render();
+}
+document.addEventListener('focusout', () => { if (dirty) { dirty = false; setTimeout(render, 0); } });
 
 function render() {
   const nav = document.getElementById('nav'), view = document.getElementById('view');
@@ -593,10 +601,12 @@ const clickActions = {
 
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-act]');
-  if (el && clickActions[el.dataset.act]) clickActions[el.dataset.act](el);
+  const fn = el && (clickActions[el.dataset.act] || labActions[el.dataset.act]);
+  if (fn) fn(el);
 });
 document.addEventListener('input', (e) => {
   const t = e.target;
+  if (labInput(t)) return;
   if (t.dataset.draft) ui.draft[t.dataset.draft] = t.value;
   if (t.dataset.cfg) { CFG[t.dataset.cfg] = t.value.trim(); saveCfg(); }
 });
@@ -607,6 +617,8 @@ document.addEventListener('change', async (e) => {
     try { applyConnectCode(t.value); t.value = ''; ui.sync = ''; ui.syncErr = ''; ui.showCode = false; toast('연결했어요'); render(); sync(); }
     catch (err) { ui.syncErr = err.message; render(); }
   }
+  if (t.dataset.b && t.type === 'checkbox') { render(); return; }
+  if (t.matches('[data-paper-pdf]') && t.files.length) { const f = t.files[0]; t.value = ''; labPdf(f); return; }
   if (t.matches('[data-doc]') && t.files.length) { const fs = Array.from(t.files); t.value = ''; handleFiles(fs); }
   if (t.matches('[data-import]') && t.files.length) {
     try {
@@ -632,6 +644,8 @@ document.addEventListener('submit', (e) => {
     S.dumps.push({ id, raw, status: 'pending', summary: '', created_at: nowISO() });
     S.rev = Date.now(); storageOk = lsSet(LS_STATE, JSON.stringify(S));
     runSort(raw, { dumpIds: [id] });
+  } else if (labSubmit(kind, fd)) {
+    /* 연구실 */
   } else if (kind === 'doctext') {
     const text = String(fd.get('text') || ''); if (text.trim()) summarize('붙여 넣은 글', text);
   }
