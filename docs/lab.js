@@ -19,6 +19,17 @@ const PAPER_FIELDS = [
 const CASE_CONF = [['mesh', '격자 수'], ['bc', '경계조건'], ['turb', '난류모델']];
 const SEED_CARDS = ['η', 'φ', '블로잉비 M', '밀도비 DR', 'y+', '단위 셀 해석', '난류모델'];
 const STEPS = [1, 3, 7, 14, 30];
+// 쓰는 Fluent. 라이선스가 있는 것과 없는 것을 구분해서 기록한다.
+const FL_VERS = [['2023R1', '2023R1 (라이선스 있음)', '2023R1'], ['2026R1S', '2026R1 학생용', '2026R1 학생용'], ['CLUSTER', '학교 클러스터 (라이선스 있음)', '클러스터']];
+const verShort = (v) => (FL_VERS.find((x) => x[0] === v) || [0, 0, ''])[2];
+const verTag = (v) => (v ? `<span class="tag ${v === '2026R1S' ? 'bad' : 'ok'}">${esc(verShort(v))}</span>` : '<span class="tag bad">버전 미선택</span>');
+const verOptions = (cur) => `<option value="">버전 선택</option>` + FL_VERS.map(([k, l]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
+function verNote(v, prevVer) {
+  let out = '';
+  if (v === '2026R1S') out += '<div class="note">학생용 버전이에요. 라이선스 제한(격자 규모·기능 등)이 있을 수 있어요. 이 버전에서 막히는 게 있으면 기록해 두고, 정식 라이선스가 있는 2023R1이나 학교 클러스터에서 돌려도 되는지 확인하세요.</div>';
+  if (prevVer && v && prevVer !== v) out += `<div class="note">이전 케이스는 ${esc(verShort(prevVer))}로 돌렸어요. 버전이 다르면 메뉴·기본 설정·결과가 달라질 수 있으니, 비교할 때 주의하세요.</div>`;
+  return out;
+}
 
 const getBy = (col, id) => S[col].find((x) => x.id === id);
 const live = (col) => S[col].filter((x) => !x.deleted);
@@ -33,10 +44,10 @@ function setPath(obj, path, val) {
 /* ------------------------------------------------------------ 연구실 화면 */
 
 function viewLab() {
-  const tabs = [['papers', '논문표'], ['quiz', '퀴즈'], ['cases', 'Fluent']];
+  const tabs = [['papers', '논문표'], ['quiz', '퀴즈'], ['cases', 'Fluent'], ['tuts', '튜토리얼']];
   let out = '<p class="screen-title">연구실</p><p class="lede">삼출냉각 연구용이에요. 여기서는 AI가 대신 이해해 주지 않아요. 직접 확인하고, 설명하고, 예측해요.</p>';
   out += '<div class="seg" role="group" aria-label="연구실 기능">' + tabs.map(([k, l]) => `<button data-act="labtab" data-tab="${k}" aria-pressed="${ui.lab === k}">${l}</button>`).join('') + '</div>';
-  out += ui.lab === 'quiz' ? viewQuiz() : ui.lab === 'cases' ? viewCases() : viewPapers();
+  out += ui.lab === 'quiz' ? viewQuiz() : ui.lab === 'cases' ? viewCases() : ui.lab === 'tuts' ? viewTuts() : viewPapers();
   return out;
 }
 
@@ -252,22 +263,22 @@ function viewCases() {
   if (ui.caseView === 'table') return out + caseTable(cases);
   out += cases.slice().reverse().map((c) => {
     const st = !hasPred(c) ? '예상 전' : !hasActual(c) ? '실행 대기' : '결과 있음';
-    return `<div class="row"><div class="grow"><b>${esc(c.name || '이름 없음')}</b><span class="tag ${st === '결과 있음' ? 'ok' : ''}">${st}</span><span class="sub">${esc(c.changes || '바뀐 점 미입력')}</span></div><button class="btn small" data-act="caseopen" data-id="${c.id}">열기</button></div>`;
+    return `<div class="row"><div class="grow"><b>${esc(c.name || '이름 없음')}</b>${verTag(c.ver)}<span class="tag ${st === '결과 있음' ? 'ok' : ''}">${st}</span><span class="sub">${esc(c.changes || '바뀐 점 미입력')}</span></div><button class="btn small" data-act="caseopen" data-id="${c.id}">열기</button></div>`;
   }).join('');
   return out;
 }
 
 function caseTable(cases) {
-  const rows = [['prev', '이전 케이스'], ['changes', '바뀐 점'], ...CASE_CONF, ['pred', '예상 결과'], ['actual', '실제 결과'], ['why', '예상과 다른 이유']];
-  const conf = new Set(['mesh', 'bc', 'turb']);
-  const val = (c, k) => (k === 'prev' ? ((getBy('cases', c.prev) || {}).name || '') : (c[k] || ''));
+  const rows = [['ver', 'Fluent 버전'], ['tut', '튜토리얼'], ['prev', '이전 케이스'], ['changes', '바뀐 점'], ...CASE_CONF, ['pred', '예상 결과'], ['actual', '실제 결과'], ['why', '예상과 다른 이유']];
+  const conf = new Set(['ver', 'mesh', 'bc', 'turb']);
+  const val = (c, k) => (k === 'prev' ? ((getBy('cases', c.prev) || {}).name || '') : k === 'ver' ? verShort(c.ver) : k === 'tut' ? ((getBy('tuts', c.tut) || {}).name || '') : (c[k] || ''));
   const head = '<th class="stick"></th>' + cases.map((c) => `<th>${esc(c.name || '이름 없음')}</th>`).join('');
   const body = rows.map(([k, l]) => `<tr><th class="stick" scope="row">${l}</th>${cases.map((c, i) => {
     const v = val(c, k), pv = i ? val(cases[i - 1], k) : v;
     const changed = i && conf.has(k) && v !== pv;
     return `<td class="${changed ? 'chg' : ''} ${k === 'pred' || k === 'actual' || k === 'why' || k === 'changes' ? 'wrap' : ''}">${v ? esc(v) : '—'}</td>`;
   }).join('')}</tr>`).join('');
-  return `<div class="tablewrap"><table class="lab"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div><p class="quiet" style="margin-top:.6rem">바로 왼쪽 케이스와 달라진 격자·경계조건·난류모델 칸은 강조돼요.</p>`;
+  return `<div class="tablewrap"><table class="lab"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div><p class="quiet" style="margin-top:.6rem">바로 왼쪽 케이스와 달라진 버전·격자·경계조건·난류모델 칸은 강조돼요.</p>`;
 }
 
 function caseEditor(c) {
@@ -276,6 +287,8 @@ function caseEditor(c) {
   const locked = !hasPred(c);
   let out = `<button class="btn small" data-act="caseback">← 목록</button><div class="gap"></div>
 <label class="field" for="c-name">케이스 이름</label><input id="c-name" type="text" ${b('name')} value="${esc(c.name)}">
+<label class="field" for="c-ver">Fluent 버전</label><select id="c-ver" ${b('ver')}>${verOptions(c.ver)}</select>${verNote(c.ver, (getBy('cases', c.prev) || {}).ver)}
+<label class="field" for="c-tut">따라 하는 튜토리얼</label><select id="c-tut" ${b('tut')}><option value="">없음</option>${live('tuts').map((t) => `<option value="${t.id}" ${t.id === c.tut ? 'selected' : ''}>${esc(t.name || '이름 없음')}</option>`).join('')}</select>
 <label class="field" for="c-prev">이전 케이스</label><select id="c-prev" ${b('prev')}><option value="">없음</option>${others.map((o) => `<option value="${o.id}" ${o.id === c.prev ? 'selected' : ''}>${esc(o.name || '이름 없음')}</option>`).join('')}</select>
 <label class="field" for="c-chg">이전 케이스와 바뀐 점</label><textarea id="c-chg" style="min-height:80px" ${b('changes')}>${esc(c.changes)}</textarea>`;
   out += CASE_CONF.map(([k, l]) => `<label class="field" for="c-${k}">${l}</label><input id="c-${k}" type="text" ${b(k)} value="${esc(c[k])}">`).join('');
@@ -297,6 +310,44 @@ function refreshCaseLocks(c) {
   const pr = document.getElementById('c-pred'); if (pr) pr.readOnly = hasActual(c);
 }
 
+
+/* ------------------------------------------------------------ 튜토리얼 복습·평 */
+
+const TUT_STATUS = ['진행 중', '끝냄', '보류'];
+function viewTuts() {
+  if (ui.tutId && getBy('tuts', ui.tutId) && !getBy('tuts', ui.tutId).deleted) return tutEditor(getBy('tuts', ui.tutId));
+  const tuts = live('tuts').sort((a, b) => b.created_at.localeCompare(a.created_at));
+  let out = '<p class="lede">따라 한 튜토리얼마다 쓴 버전, 내 말로 한 복습, 평을 남겨요. AI가 대신 써 주지 않아요.</p>';
+  out += '<form data-form="newtut" class="stack"><input type="text" name="name" placeholder="튜토리얼 이름 (예: 막냉각 평판 튜토리얼)" aria-label="새 튜토리얼 이름" autocomplete="off"><button class="btn primary" type="submit">튜토리얼 추가</button></form>';
+  if (!tuts.length) return out + '<p class="quiet" style="margin-top:1rem">아직 없어요.</p>';
+  out += tuts.map((t) => {
+    const n = live('cases').filter((c) => c.tut === t.id).length;
+    return `<div class="row"><div class="grow"><b>${esc(t.name || '이름 없음')}</b>${verTag(t.ver)}<span class="tag">${esc(t.status || '진행 중')}</span>${(t.review || '').trim() ? '<span class="tag ok">복습 있음</span>' : '<span class="tag bad">복습 안 씀</span>'}<span class="sub">케이스 ${n}개${t.rating ? ` · 도움 ${esc(t.rating)}/5` : ''}</span></div><button class="btn small" data-act="tutopen" data-id="${t.id}">열기</button></div>`;
+  }).join('');
+  return out;
+}
+function tutEditor(t) {
+  const b = (path) => `data-b="tuts|${t.id}|${path}"`;
+  const cases = live('cases').filter((c) => c.tut === t.id).sort((a, b2) => a.created_at.localeCompare(b2.created_at));
+  let out = `<button class="btn small" data-act="tutback">← 목록</button><div class="gap"></div>
+<label class="field" for="t-name">튜토리얼 이름</label><input id="t-name" type="text" ${b('name')} value="${esc(t.name)}">
+<label class="field" for="t-ver">쓴 Fluent 버전</label><select id="t-ver" ${b('ver')}>${verOptions(t.ver)}</select>${verNote(t.ver)}
+<label class="field" for="t-src">튜토리얼 출처와 문서 버전</label><input id="t-src" type="text" ${b('source')} value="${esc(t.source)}" placeholder="예: Fluent 2023 R1 Tutorial Guide, 3장">
+<label class="field" for="t-st">진행 상태</label><select id="t-st" ${b('status')}>${TUT_STATUS.map((s) => `<option ${s === (t.status || '진행 중') ? 'selected' : ''}>${s}</option>`).join('')}</select>
+<label class="field" for="t-lim">버전·라이선스 때문에 달랐거나 막힌 것</label><textarea id="t-lim" style="min-height:80px" ${b('limits')} placeholder="예: 튜토리얼과 메뉴 이름이 달랐다 / 격자 크기 제한에 걸렸다">${esc(t.limits)}</textarea>
+<p class="screen-title" style="margin-top:1.6rem">복습</p>
+<p class="quiet">보지 않고 내 말로 써요. 이 튜토리얼이 무엇을 보여줬고, 각 단계가 왜 필요했는지.</p>
+<textarea id="t-rev" ${b('review')}>${esc(t.review)}</textarea>
+<label class="field" for="t-stuck">따라는 했지만 이유를 모르는 단계</label><textarea id="t-stuck" style="min-height:90px" ${b('stuck')}>${esc(t.stuck)}</textarea>
+<p class="screen-title" style="margin-top:1.6rem">평</p>
+<label class="field" for="t-rate">이해에 도움이 된 정도</label><select id="t-rate" ${b('rating')}><option value="">선택</option>${[1, 2, 3, 4, 5].map((n) => `<option ${String(n) === String(t.rating) ? 'selected' : ''}>${n}</option>`).join('')}</select>
+<textarea id="t-eval" style="min-height:110px" ${b('eval')} placeholder="좋았던 점, 아쉬웠던 점, 다음에 더 봐야 할 것">${esc(t.eval)}</textarea>`;
+  out += '<p class="screen-title" style="margin-top:1.4rem">이 튜토리얼로 돌린 케이스</p>';
+  out += cases.length ? cases.map((c) => `<div class="row"><div class="grow">${esc(c.name || '이름 없음')} ${verTag(c.ver)}</div><button class="btn small" data-act="caseopen" data-id="${c.id}" data-tab="cases">열기</button></div>`).join('') : '<p class="quiet">Fluent 탭에서 케이스를 만들고 이 튜토리얼을 고르면 여기에 모여요.</p>';
+  out += `<div class="gap"></div><button class="btn" data-act="tutdel" data-id="${t.id}">이 튜토리얼 지우기</button>`;
+  return out;
+}
+
 /* ------------------------------------------------------------ 연결 */
 
 function labInput(t) {
@@ -312,9 +363,15 @@ function labInput(t) {
 function labSubmit(kind, fd) {
   if (kind === 'newcase') {
     const name = String(fd.get('name') || '').trim(); if (!name) { toast('이름을 먼저 적어 주세요'); return true; }
-    const c = { id: uid(), name, prev: '', changes: '', mesh: '', bc: '', turb: '', pred: '', actual: '', why: '', predicted_at: null, created_at: nowISO() };
-    const last = live('cases').sort((a, b) => a.created_at.localeCompare(b.created_at)).pop(); if (last) c.prev = last.id;
+    const c = { id: uid(), name, ver: '', tut: '', prev: '', changes: '', mesh: '', bc: '', turb: '', pred: '', actual: '', why: '', predicted_at: null, created_at: nowISO() };
+    const last = live('cases').sort((a, b) => a.created_at.localeCompare(b.created_at)).pop(); if (last) { c.prev = last.id; c.ver = last.ver || ''; c.tut = last.tut || ''; } else c.ver = '2023R1';
     S.cases.push(c); ui.caseId = c.id; commit(); return true;
+  }
+  if (kind === 'newtut') {
+    const name = String(fd.get('name') || '').trim(); if (!name) { toast('이름을 먼저 적어 주세요'); return true; }
+    const last = live('tuts').sort((a, b) => a.created_at.localeCompare(b.created_at)).pop();
+    const t = { id: uid(), name, ver: (last && last.ver) || '2023R1', source: '', status: '진행 중', limits: '', review: '', stuck: '', rating: '', eval: '', created_at: nowISO() };
+    S.tuts.push(t); ui.tutId = t.id; commit(); return true;
   }
   if (kind === 'newcard') {
     const name = String(fd.get('name') || '').trim(); if (!name) return true;
@@ -337,7 +394,10 @@ const labActions = {
     const text = live('papers').filter((p) => p.opened).map((p) => bib(p)).join('\n');
     (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(() => toast('복사했어요'), () => toast('복사하지 못했어요'));
   },
-  caseopen: (el) => { ui.caseId = el.dataset.id; render(); window.scrollTo(0, 0); },
+  tutopen: (el) => { ui.tutId = el.dataset.id; render(); window.scrollTo(0, 0); },
+  tutback: () => { ui.tutId = null; render(); },
+  tutdel: (el) => { if (!confirm('이 튜토리얼을 지울까요?')) return; const t = getBy('tuts', el.dataset.id); if (t) { t.deleted = true; ui.tutId = null; commit(); } },
+  caseopen: (el) => { if (el.dataset.tab) { ui.lab = 'cases'; lsSet('sh_lab', 'cases'); } ui.caseId = el.dataset.id; render(); window.scrollTo(0, 0); },
   caseback: () => { ui.caseId = null; render(); },
   caseview: (el) => { ui.caseView = el.dataset.v; render(); },
   casedel: (el) => { if (!confirm('이 케이스를 지울까요?')) return; const c = getBy('cases', el.dataset.id); if (c) { c.deleted = true; ui.caseId = null; commit(); } },

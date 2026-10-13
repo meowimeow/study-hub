@@ -13,12 +13,12 @@ const PLACEHOLDER = '예: 열역학 중간이 다음 주 수요일인데 아직 
 const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } };
 
-function emptyState() { return { rev: 0, tasks: [], dumps: [], parking: [], docs: [], papers: [], cards: [], cases: [] }; }
+function emptyState() { return { rev: 0, tasks: [], dumps: [], parking: [], docs: [], papers: [], cards: [], cases: [], tuts: [] }; }
 function normalize(s) {
   const o = emptyState();
   if (s && typeof s === 'object') {
     o.rev = Number(s.rev) || 0;
-    for (const k of ['tasks', 'dumps', 'parking', 'docs', 'papers', 'cards', 'cases']) o[k] = Array.isArray(s[k]) ? s[k] : [];
+    for (const k of ['tasks', 'dumps', 'parking', 'docs', 'papers', 'cards', 'cases', 'tuts']) o[k] = Array.isArray(s[k]) ? s[k] : [];
   }
   return o;
 }
@@ -28,11 +28,11 @@ function loadCfg() { try { return Object.assign({ gemini: '', sbUrl: '', sbKey: 
 let S = loadState();
 let CFG = loadCfg();
 let screen = SCREENS.includes(lsGet(LS_SCREEN)) ? lsGet(LS_SCREEN) : '지금';
-const ui = { lab: ['papers', 'quiz', 'cases'].includes(lsGet('sh_lab')) ? lsGet('sh_lab') : 'papers', paper: null, caseId: null, quiz: null, paperView: 'list', caseView: 'list', result: null, busy: null, error: null, docKind: 'subject', draft: {}, sync: '', syncErr: '' };
+const ui = { lab: ['papers', 'quiz', 'cases', 'tuts'].includes(lsGet('sh_lab')) ? lsGet('sh_lab') : 'papers', paper: null, caseId: null, quiz: null, paperView: 'list', caseView: 'list', result: null, busy: null, error: null, docKind: 'subject', draft: {}, sync: '', syncErr: '' };
 let storageOk = true;
 
 function saveCfg() { lsSet(LS_CFG, JSON.stringify(CFG)); }
-const COLS = ['tasks', 'dumps', 'parking', 'docs', 'papers', 'cards', 'cases'];
+const COLS = ['tasks', 'dumps', 'parking', 'docs', 'papers', 'cards', 'cases', 'tuts'];
 let snap = new Map();
 const strip = (x) => { const { u, ...r } = x; return JSON.stringify(r); };
 function resnap() { snap = new Map(); COLS.forEach((k) => S[k].forEach((it) => snap.set(it.id, strip(it)))); }
@@ -617,7 +617,7 @@ document.addEventListener('change', async (e) => {
     try { applyConnectCode(t.value); t.value = ''; ui.sync = ''; ui.syncErr = ''; ui.showCode = false; toast('연결했어요'); render(); sync(); }
     catch (err) { ui.syncErr = err.message; render(); }
   }
-  if (t.dataset.b && t.type === 'checkbox') { render(); return; }
+  if (t.dataset.b && (t.type === 'checkbox' || t.tagName === 'SELECT')) { render(); return; }
   if (t.matches('[data-paper-pdf]') && t.files.length) { const f = t.files[0]; t.value = ''; labPdf(f); return; }
   if (t.matches('[data-doc]') && t.files.length) { const fs = Array.from(t.files); t.value = ''; handleFiles(fs); }
   if (t.matches('[data-import]') && t.files.length) {
