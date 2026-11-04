@@ -5,7 +5,10 @@
 const SCREENS = ['지금', '쏟아내기', '주차장', '마무리', '자료', '연구실'];
 const LS_STATE = 'sh_state_v1', LS_CFG = 'sh_settings_v1', LS_SCREEN = 'sh_screen';
 const MODEL = 'gemini-3.8-flash';
+const GEMINI_TIMEOUT = 120000;
 const WEEKDAYS = '월화수목금토일';
+const PLAN_N = 3;
+const BUCKETS = ['시험', '연구실', '과제', '생활'];
 const PLACEHOLDER = '예: 열역학 중간이 다음 주 수요일인데 아직 3단원도 못 봤고, 금요일까지 보고서 써야 하고, 연구실 미팅 자료도 만들어야 하는데 갑자기 자격증도 따야 하나 싶고…';
 
 /* ------------------------------------------------------------ 저장 */
@@ -28,7 +31,7 @@ function loadCfg() { try { return Object.assign({ gemini: '', sbUrl: '', sbKey: 
 let S = loadState();
 let CFG = loadCfg();
 let screen = SCREENS.includes(lsGet(LS_SCREEN)) ? lsGet(LS_SCREEN) : '지금';
-const ui = { lab: ['papers', 'quiz', 'cases', 'tuts'].includes(lsGet('sh_lab')) ? lsGet('sh_lab') : 'papers', paper: null, caseId: null, quiz: null, paperView: 'list', caseView: 'list', result: null, busy: null, error: null, docKind: 'subject', draft: {}, sync: '', syncErr: '' };
+const ui = { lab: ['papers', 'quiz', 'cases', 'tuts'].includes(lsGet('sh_lab')) ? lsGet('sh_lab') : 'papers', paper: null, caseId: null, quiz: null, paperView: 'list', caseView: 'list', result: null, busy: null, error: null, dumpView: 'write', draft: {}, sync: '', syncErr: '' };
 let storageOk = true;
 
 function saveCfg() { lsSet(LS_CFG, JSON.stringify(CFG)); }
@@ -84,7 +87,8 @@ function orderTasks(tasks) {
     const days = dueDays(t.due);
     const bucket = days === null ? 2 : days <= 3 ? 0 : days <= 14 ? 1 : 2;
     const skips = t.skip_day === t0 ? (t.skips || 0) : 0;
-    return [plannedFlag, skips, bucket, -(t.urgency || 3), days === null ? 9999 : days, t.created_at || ''];
+    const picked = t.pick_day === t0 ? -(t.pick_at || 1) : 0; // 오늘 직접 고른 일이 맨 앞, 나중에 고른 것이 먼저
+    return [picked, plannedFlag, skips, bucket, -(t.urgency || 3), days === null ? 9999 : days, t.created_at || ''];
   };
   return tasks.map((t) => [key(t), t]).sort((a, b) => {
     for (let i = 0; i < a[0].length; i++) { if (a[0][i] < b[0][i]) return -1; if (a[0][i] > b[0][i]) return 1; }
@@ -107,16 +111,18 @@ function addTasks(items, source, parentId, plannedFor) {
   });
 }
 function completeTask(t) { t.status = 'done'; t.done_at = nowISO(); t.done_day = todayISO(); }
-function skipTask(t) { const d = todayISO(); t.skips = (t.skip_day === d ? (t.skips || 0) : 0) + 1; t.skip_day = d; t.planned_for = null; }
+function reopenTask(id) { const t = S.tasks.find((x) => x.id === id); if (t) { t.status = 'open'; t.done_at = null; t.done_day = null; commit(); } }
+function skipTask(t) { const d = todayISO(); t.skips = (t.skip_day === d ? (t.skips || 0) : 0) + 1; t.skip_day = d; t.planned_for = null; t.pick_day = null; }
 function replaceWithSteps(t, steps) {
   addTasks(steps.map((s) => ({ ...s, bucket: t.bucket, due: t.due, urgency: t.urgency })), 'split', t.id, todayISO());
+  if (t.pick_day === todayISO()) S.tasks.filter((x) => x.parent_id === t.id).forEach((x, i) => { x.pick_day = t.pick_day; x.pick_at = t.pick_at - i; });
   t.status = 'split';
 }
+// 직접 고른 것은 그대로 두고 남은 칸만 채운다.
 function planTomorrow(n) {
   const tm = tomorrowISO();
-  S.tasks.forEach((t) => { if (t.planned_for === tm) t.planned_for = null; });
-  const open = S.tasks.filter((t) => t.status === 'open');
-  orderTasks(open.map((t) => ({ ...t, planned_for: null }))).slice(0, n).forEach((c) => {
+  const rest = S.tasks.filter((t) => t.status === 'open' && t.planned_for !== tm);
+  orderTasks(rest.map((t) => ({ ...t, planned_for: null, pick_day: null }))).slice(0, Math.max(0, n - plannedTomorrow().length)).forEach((c) => {
     const real = S.tasks.find((t) => t.id === c.id); if (real) real.planned_for = tm;
   });
 }
@@ -130,11 +136,14 @@ async function gemini(prompt, schema) {
   const body = { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: schema ? 0.3 : 0.4, thinkingConfig: { thinkingBudget: 0 } } };
   if (schema) { body.generationConfig.responseMimeType = 'application/json'; body.generationConfig.responseSchema = schema; }
   let r;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), GEMINI_TIMEOUT);
   try {
     r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': CFG.gemini }, body: JSON.stringify(body),
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': CFG.gemini }, body: JSON.stringify(body), signal: ctl.signal,
     });
-  } catch (e) { throw new AIError('Gemini에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.'); }
+  } catch (e) {
+    throw new AIError(e.name === 'AbortError' ? 'Gemini가 2분 넘게 답하지 않아요. 잠시 뒤에 다시 눌러 주세요.' : 'Gemini에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.');
+  } finally { clearTimeout(timer); }
   if (!r.ok) {
     let msg = ''; try { msg = (await r.json()).error.message || ''; } catch (e) { /* ignore */ }
     if (r.status === 400 && /API key/i.test(msg)) throw new AIError('Gemini 키가 맞지 않아요. 키를 다시 확인해 주세요.');
@@ -155,7 +164,7 @@ const SORT_SCHEMA = {
   type: 'OBJECT', required: ['tasks', 'summary', 'warnings'],
   properties: {
     tasks: { type: 'ARRAY', items: { type: 'OBJECT', required: ['title', 'bucket', 'first_step', 'urgency'], properties: {
-      title: { type: 'STRING' }, bucket: { type: 'STRING', enum: ['시험', '연구실', '과제', '생활'] },
+      title: { type: 'STRING' }, bucket: { type: 'STRING', enum: BUCKETS },
       due: { type: 'STRING', nullable: true }, est_min: { type: 'INTEGER', nullable: true },
       first_step: { type: 'STRING' }, urgency: { type: 'INTEGER' } } } },
     summary: { type: 'STRING' }, warnings: { type: 'ARRAY', items: { type: 'STRING' } },
@@ -197,7 +206,7 @@ ${lines}
 async function aiSort(raw) {
   const r = await gemini(sortPrompt(raw, openTasks()), SORT_SCHEMA);
   const tasks = (r.tasks || []).map((t) => ({
-    title: String(t.title || '').trim(), bucket: ['시험', '연구실', '과제', '생활'].includes(t.bucket) ? t.bucket : '생활',
+    title: String(t.title || '').trim(), bucket: BUCKETS.includes(t.bucket) ? t.bucket : '생활',
     due: dueDays(t.due) === null ? null : t.due, est_min: Number.isFinite(t.est_min) ? t.est_min : null,
     first_step: String(t.first_step || '').trim(), urgency: Math.min(5, Math.max(1, Math.round(t.urgency) || 3)),
   })).filter((t) => t.title);
@@ -225,15 +234,6 @@ const EXAM_PROMPT = (c) => `너는 대학생의 시험 공부를 돕는 조교�
 - 공식, 수치, 시험에 나올 만한 포인트는 굵게
 - 헷갈리기 쉬운 개념은 비교해서 설명
 - 마지막에 '예상 출제 포인트' 3~5개
-
---- 원문 ---
-${c}`;
-const LAB_PROMPT = (c) => `너는 대학 연구실 연구 노트 정리를 돕는 조교야. 아래는 논문이나 진행 중인 연구 자료에서 뽑은 텍스트야.
-한국어 마크다운으로 정리해 줘.
-- 논문이면: 연구 목적, 방법, 핵심 결과, 우리 연구에 적용할 수 있는 점
-- 진행상황·회의록이면: 지금까지 한 일, 발견한 문제, 다음에 할 일
-- 전문 용어는 그대로 두고 항목별로
-- 마지막에 '다음 액션' 섹션
 
 --- 원문 ---
 ${c}`;
@@ -305,6 +305,7 @@ async function sync() {
   if (!syncOn()) return;
   if (syncing) { syncQueued = true; return; }
   syncing = true;
+  const hadErr = !!ui.syncErr;
   try {
     const raw = await rpc('sh_get', { p_code: CFG.code });
     const remote = merge(emptyState(), normalize(raw));
@@ -313,8 +314,8 @@ async function sync() {
     if (changed) { S = merged; S.rev = Date.now(); resnap(); storageOk = lsSet(LS_STATE, JSON.stringify(S)); }
     if (!raw || sig(merged) !== sig(remote)) await rpc('sh_put', { p_code: CFG.code, p_data: S });
     ui.sync = (changed ? '다른 기기의 내용을 합쳤어요 ' : '동기화됨 ') + clock(); ui.syncErr = '';
-    if (changed || screen === '마무리') renderSoon();
-  } catch (e) { ui.syncErr = e.message; if (screen === '마무리') render(); }
+    if (changed || hadErr || screen === '마무리') renderSoon();
+  } catch (e) { ui.syncErr = e.message; if (!hadErr || screen === '마무리') renderSoon(); }
   syncing = false;
   if (syncQueued) { syncQueued = false; schedulePush(); }
 }
@@ -326,7 +327,8 @@ const connectCode = () => 'SH1.' + b64e({ g: CFG.gemini, u: sbBase(), k: CFG.sbK
 function applyConnectCode(text) {
   const m = String(text).trim().match(/SH1\.([A-Za-z0-9_-]+)/);
   if (!m) throw new Error('연결 코드가 아니에요. SH1. 으로 시작하는 한 줄을 통째로 붙여 넣어 주세요.');
-  const o = b64d(m[1]);
+  let o;
+  try { o = b64d(m[1]); } catch (e) { throw new Error('연결 코드가 잘렸거나 틀려요. 다시 복사해서 한 줄 전체를 붙여 넣어 주세요.'); }
   CFG.gemini = o.g || CFG.gemini; CFG.sbUrl = o.u || ''; CFG.sbKey = o.k || ''; CFG.code = o.c || '';
   saveCfg();
 }
@@ -357,7 +359,20 @@ const busyLabel = (idle) => (ui.busy ? `<span class="spin"></span>${esc(ui.busy)
 
 /* ------------------------------------------------------------ 화면 */
 
+function taskEditor(t) {
+  const b = (path) => `data-b="tasks|${t.id}|${path}"`;
+  return `<p class="screen-title">할 일 고치기</p>
+<label class="field" for="e-title">할 일</label><input id="e-title" type="text" ${b('title')} value="${esc(t.title)}" autocomplete="off">
+<label class="field" for="e-first">처음 할 동작</label><input id="e-first" type="text" ${b('first_step')} value="${esc(t.first_step)}" autocomplete="off">
+<label class="field" for="e-due">마감 (없으면 비워 둬요)</label><input id="e-due" type="date" ${b('due')} value="${esc(t.due)}">
+<label class="field" for="e-bucket">분류</label><select id="e-bucket" ${b('bucket')}>${BUCKETS.map((x) => `<option ${x === t.bucket ? 'selected' : ''}>${x}</option>`).join('')}</select>
+<label class="field" for="e-min">예상 시간 (분)</label><input id="e-min" type="number" inputmode="numeric" min="1" ${b('est_min')} value="${esc(t.est_min)}">
+<div class="gap"></div><button class="btn primary" data-act="editdone" data-id="${t.id}">다 고쳤어요</button>
+<div style="height:.6rem"></div><button class="btn" data-act="drop" data-id="${t.id}">이 일 빼기</button>`;
+}
+
 function viewNow() {
+  if (ui.edit) { const t = S.tasks.find((x) => x.id === ui.edit && x.status === 'open'); if (t) return taskEditor(t); ui.edit = null; }
   const tasks = openTasks();
   let out = straight();
   if (!CFG.gemini && !syncOn()) out += '<div class="note">다른 기기에서 쓰던 중이라면 마무리 → 연결과 설정에서 연결 코드를 붙여 넣어 주세요. 처음이라면 같은 곳에서 Gemini 키부터 넣어요.</div><div style="height:1rem"></div>';
@@ -374,18 +389,33 @@ function viewNow() {
   out += errBox();
   out += `<button class="btn primary" data-act="done" data-id="${t.id}">끝냈어요</button>`;
   out += `<div class="pair"><button class="btn" data-act="split" data-id="${t.id}" ${ui.busy ? 'disabled' : ''}>${busyLabel('더 작게 나누기')}</button><button class="btn" data-act="later" data-id="${t.id}">나중에</button></div>`;
+  out += `<button class="textbtn" data-act="edit" data-id="${t.id}">고치거나 빼기</button>`;
   const n = doneToday().length;
   if (n) out += `<p class="quiet" style="margin-top:1rem">오늘 ${n}개 끝냈어요.</p>`;
   out += '<div class="gap"></div>' + parkingForm('park_now');
   const rest = tasks.slice(1);
   if (rest.length) {
-    out += `<details><summary>남은 일 ${rest.length}개 보기</summary><div class="body">${rest.map((r) => rowHtml(r, `<button class="btn small" data-act="drop" data-id="${r.id}">빼기</button>`)).join('')}</div></details>`;
+    out += `<details><summary>남은 일 ${rest.length}개 보기</summary><div class="body">${rest.map((r) => rowHtml(r, `<div class="acts"><button class="btn small" data-act="picknow" data-id="${r.id}">지금 하기</button><button class="btn small" data-act="edit" data-id="${r.id}">고치기</button></div>`)).join('')}</div></details>`;
   }
   return out;
 }
 
+function viewArchive() {
+  const items = S.dumps.slice().sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+  let out = '<p class="screen-title">보관함</p><p class="lede">쏟아낸 글은 정리한 뒤에도 그대로 여기에 남아요.</p>';
+  if (!items.length) return out + '<p class="quiet">아직 쏟아낸 글이 없어요.</p>';
+  return out + items.map((d) => {
+    const when = new Date(d.created_at).toLocaleString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const head = d.raw.length > 40 ? `${d.raw.slice(0, 40)}…` : d.raw;
+    return `<details data-key="dump-${d.id}"><summary>${esc(head)}<span class="sub">${esc(when)}${d.status === 'pending' ? '<span class="tag bad">정리 전</span>' : ''}</span></summary><div class="body"><p class="dumptext">${esc(d.raw)}</p>${d.summary ? `<p class="quiet">${esc(d.summary)}</p>` : ''}</div></details>`;
+  }).join('');
+}
+
 function viewDump() {
   let out = tangle();
+  const archive = ui.dumpView === 'archive';
+  out += `<div class="seg" role="group" aria-label="보기"><button data-act="dumpview" data-v="write" aria-pressed="${!archive}">쓰기</button><button data-act="dumpview" data-v="archive" aria-pressed="${archive}">보관함</button></div>`;
+  if (archive) return out + viewArchive();
   const res = ui.result;
   if (res) {
     out += `<div class="result"><p>${esc(res.summary)}</p>${res.warnings.map((w) => `<div class="note">${esc(w)}</div>`).join('')}</div><button class="btn primary" data-act="go" data-to="지금">지금 할 일 보기</button><div class="gap"></div>`;
@@ -397,6 +427,7 @@ function viewDump() {
   }
   out += errBox();
   out += `<form data-form="dump" style="margin-top:.8rem"><textarea name="raw" data-draft="dump" placeholder="${esc(PLACEHOLDER)}" aria-label="쏟아내기">${esc(ui.draft.dump || '')}</textarea><button class="btn primary" type="submit" ${ui.busy ? 'disabled' : ''}>${busyLabel('정리하기')}</button></form>`;
+  out += `<details><summary>AI 없이 직접 추가</summary><div class="body"><form data-form="taskadd"><label class="field" for="a-title">할 일</label><input id="a-title" type="text" name="title" data-draft="addtitle" value="${esc(ui.draft.addtitle || '')}" autocomplete="off"><label class="field" for="a-due">마감 (없으면 비워 둬요)</label><input id="a-due" type="date" name="due" data-draft="adddue" value="${esc(ui.draft.adddue || '')}"><button class="btn" type="submit">할 일 추가</button></form></div></details>`;
   return out;
 }
 
@@ -412,13 +443,17 @@ function viewParking() {
 function viewWrap() {
   const done = doneToday(), tasks = openTasks();
   let out = beads(done.length) + '<p class="screen-title">오늘 하루</p>';
-  out += done.length ? `<p class="lede">오늘 ${done.length}개를 끝냈어요.</p>` + done.map((t) => `<div class="row"><div class="grow">${esc(t.title)}</div></div>`).join('') : '<p class="lede">아직 끝낸 일이 없어요. 하나만 끝내도 여기에 기록돼요.</p>';
+  out += done.length ? `<p class="lede">오늘 ${done.length}개를 끝냈어요.</p>` + done.map((t) => `<div class="row"><div class="grow">${esc(t.title)}</div><button class="btn small" data-act="reopen" data-id="${t.id}">되돌리기</button></div>`).join('') : '<p class="lede">아직 끝낸 일이 없어요. 하나만 끝내도 여기에 기록돼요.</p>';
   out += `<p class="quiet" style="margin-top:1.2rem">남은 일은 ${tasks.length}개예요.</p><p class="screen-title" style="margin-top:1.6rem">내일 먼저 볼 것</p>`;
-  const planned = plannedTomorrow();
-  let label, cls;
-  if (planned.length) { out += planned.map((t) => rowHtml(t)).join('') + '<p class="quiet" style="margin-top:.6rem">내일 \'지금\' 화면에는 이 중 하나가 먼저 떠요.</p>'; label = '다시 정하기'; cls = ''; }
-  else { out += '<p class="lede">마감이 가깝고 급한 것부터 3개를 골라 둬요.</p>'; label = '내일 할 3가지 정하기'; cls = 'primary'; }
-  out += `<button class="btn ${cls}" data-act="plan" ${tasks.length ? '' : 'disabled'}>${label}</button>`;
+  const planned = plannedTomorrow(), rest = tasks.filter((t) => !planned.includes(t)), full = planned.length >= PLAN_N;
+  if (planned.length) out += planned.map((t) => rowHtml(t, `<div class="acts"><button class="btn small" data-act="unplan" data-id="${t.id}">빼기</button></div>`)).join('') + '<p class="quiet" style="margin-top:.6rem">내일 \'지금\' 화면에는 이 중 하나가 먼저 떠요.</p>';
+  else out += `<p class="lede">직접 ${PLAN_N}개까지 고르거나, 마감이 가깝고 급한 것부터 자동으로 채워요.</p>`;
+  if (!full && rest.length) out += `<button class="btn ${planned.length ? '' : 'primary'}" data-act="plan">${planned.length ? `남은 ${PLAN_N - planned.length}칸 자동으로 채우기` : `내일 할 ${PLAN_N}가지 자동으로 정하기`}</button>`;
+  out += `<details data-key="plan"><summary>남은 일에서 직접 고르기</summary><div class="body">`;
+  if (full) out += `<p class="quiet">${PLAN_N}개를 다 골랐어요. 바꾸려면 위에서 하나를 빼요.</p>`;
+  else if (!rest.length) out += '<p class="quiet">고를 일이 없어요.</p>';
+  if (!full) out += rest.map((t) => rowHtml(t, `<div class="acts"><button class="btn small" data-act="plantask" data-id="${t.id}">고르기</button></div>`)).join('');
+  out += '</div></details>';
   out += viewSettings();
   return out;
 }
@@ -467,15 +502,13 @@ function mdToHtml(md) {
 }
 
 function viewDocs() {
-  const exam = ui.docKind === 'subject';
-  let out = '<p class="screen-title">자료 요약</p><p class="lede">강의자료나 논문을 올리면 시험 대비나 연구 정리용으로 요약해요.</p>';
-  out += `<div class="seg" role="group" aria-label="종류"><button data-act="dockind" data-kind="subject" aria-pressed="${exam}">과목 자료</button><button data-act="dockind" data-kind="lab" aria-pressed="${!exam}">연구실 자료</button></div>`;
-  if (exam) out += `<input type="text" data-draft="subject" value="${esc(ui.draft.subject || '')}" placeholder="과목 이름 (예: 열역학)" aria-label="과목 이름">`;
+  let out = '<p class="screen-title">자료 요약</p><p class="lede">강의자료를 올리면 시험 대비용으로 요약해요.</p>';
+  out += `<input type="text" data-draft="subject" value="${esc(ui.draft.subject || '')}" placeholder="과목 이름 (예: 열역학)" aria-label="과목 이름">`;
   out += `<label class="file">파일 올리기 (PDF, TXT, MD)<input type="file" data-doc accept=".pdf,.txt,.md,application/pdf,text/plain" multiple ${ui.busy ? 'disabled' : ''}></label>`;
-  out += `<details style="margin-top:0;border-top:0"><summary style="padding-top:0">글을 직접 붙여 넣기</summary><div class="body"><form data-form="doctext"><textarea name="text" style="min-height:140px" placeholder="강의 내용이나 논문 초록을 붙여 넣어요" aria-label="붙여 넣을 글"></textarea><button class="btn" type="submit" ${ui.busy ? 'disabled' : ''}>요약하기</button></form></div></details>`;
+  out += `<details style="margin-top:0;border-top:0"><summary style="padding-top:0">글을 직접 붙여 넣기</summary><div class="body"><form data-form="doctext"><textarea name="text" data-draft="doctext" style="min-height:140px" placeholder="강의 내용을 붙여 넣어요" aria-label="붙여 넣을 글">${esc(ui.draft.doctext || '')}</textarea><button class="btn" type="submit" ${ui.busy ? 'disabled' : ''}>요약하기</button></form></div></details>`;
   if (ui.busy) out += `<p class="quiet"><span class="spin"></span>${esc(ui.busy)}</p>`;
   out += errBox();
-  const docs = S.docs.filter((d) => !d.deleted && d.kind === ui.docKind).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const docs = S.docs.filter((d) => !d.deleted && d.kind === 'subject').sort((a, b) => b.created_at.localeCompare(a.created_at));
   if (!docs.length) out += '<p class="quiet" style="margin-top:1rem">아직 요약한 자료가 없어요.</p>';
   out += docs.map((d) => `<details><summary>${esc(`${d.subject || ''} ${d.filename}`.trim())}</summary><div class="body"><div class="md">${mdToHtml(d.summary)}</div><div style="height:.6rem"></div><button class="btn small" data-act="deldoc" data-id="${d.id}">지우기</button></div></details>`).join('');
   return out;
@@ -492,7 +525,16 @@ function renderSoon() {
   if (a && a.closest && a.closest('#view') && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) { dirty = true; return; }
   render();
 }
-document.addEventListener('focusout', () => { if (dirty) { dirty = false; setTimeout(render, 0); } });
+// 바로 그리면 누르던 버튼이 사라져 클릭이 먹히므로 잠시 기다린다. 다른 입력칸으로 옮겼으면 그때도 그리지 않는다.
+document.addEventListener('focusout', () => { if (dirty) { dirty = false; setTimeout(renderSoon, 300); } });
+
+// 저장이나 동기화가 막히면 설정을 열어 보지 않아도 알 수 있게 한다. 인터넷이 끊긴 건 정상이라 알리지 않는다.
+function alerts() {
+  let out = '';
+  if (!storageOk) out += '<div class="error" role="alert">이 기기에 저장하지 못했어요. 저장 공간이 찼거나 브라우저가 막고 있어요. 앱을 닫기 전에 마무리 → 연결과 설정에서 내보내기를 해 두세요.</div>';
+  if (ui.syncErr && screen !== '마무리' && navigator.onLine !== false) out += '<div class="note">기기끼리 맞추지 못하고 있어요. 이 기기에는 저장돼 있어요. 마무리 → 연결과 설정에서 이유를 볼 수 있어요.</div>';
+  return out;
+}
 
 function render() {
   const nav = document.getElementById('nav'), view = document.getElementById('view');
@@ -500,17 +542,24 @@ function render() {
   // 열어 둔 설정 칸은 다시 그려도 열린 채로 둔다.
   document.querySelectorAll('#view details[data-k]').forEach((d) => { d.open ? openState.add(d.dataset.k) : openState.delete(d.dataset.k); });
   const active = document.activeElement && document.activeElement.id;
-  view.innerHTML = VIEWS[screen]();
-  view.querySelectorAll('details').forEach((d, i) => { d.dataset.k = screen + i; if (openState.has(d.dataset.k)) d.open = true; });
+  view.innerHTML = alerts() + VIEWS[screen]();
+  view.querySelectorAll('details').forEach((d, i) => { d.dataset.k = d.dataset.key || screen + i; if (openState.has(d.dataset.k)) d.open = true; });
   if (active) { const el = document.getElementById(active); if (el) el.focus(); }
 }
 
 function go(s) {
   if (s !== '쏟아내기') ui.result = null;
-  ui.error = null; screen = s; lsSet(LS_SCREEN, s); render(); window.scrollTo(0, 0);
+  ui.error = null; ui.edit = null; screen = s; lsSet(LS_SCREEN, s); render(); window.scrollTo(0, 0);
 }
 let toastTimer;
-function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 1800); }
+let undoFn = null;
+function toast(msg, undo) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; undoFn = undo || null;
+  if (undo) { const b = document.createElement('button'); b.dataset.act = 'undo'; b.textContent = '되돌리기'; t.append(b); }
+  t.classList.toggle('undoable', !!undo); t.classList.add('on');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.classList.remove('on', 'undoable'); undoFn = null; }, undo ? 5000 : 1800);
+}
 
 /* ------------------------------------------------------------ 동작 */
 
@@ -522,22 +571,22 @@ async function runSort(raw, opt) {
     (opt.dumpIds || []).forEach((id) => { const d = S.dumps.find((x) => x.id === id); if (d) { d.status = 'done'; d.summary = r.summary; } });
     (opt.parkingIds || []).forEach((id) => { const p = S.parking.find((x) => x.id === id); if (p) p.status = 'sorted'; });
     ui.result = { summary: r.tasks.length ? r.summary : '할 일로 뽑을 만한 내용이 없었어요.', warnings: r.warnings };
-    ui.busy = null; screen = '쏟아내기'; lsSet(LS_SCREEN, screen); commit(); window.scrollTo(0, 0);
+    ui.busy = null; screen = '쏟아내기'; ui.dumpView = 'write'; lsSet(LS_SCREEN, screen); commit(); window.scrollTo(0, 0);
   } catch (e) {
     ui.busy = null; ui.error = (e instanceof AIError ? e.message : '정리하지 못했어요. 잠시 뒤에 다시 시도해 주세요.') + ' 적은 글은 저장돼 있어요.'; render();
   }
 }
 
 async function summarize(name, text) {
-  const exam = ui.docKind === 'subject';
   const subject = (ui.draft.subject || '').trim();
-  if (exam && !subject) { ui.error = '과목 이름을 먼저 적어 주세요.'; render(); return false; }
+  if (!subject) { ui.error = '과목 이름을 먼저 적어 주세요.'; render(); return false; }
   if (!text.trim()) { ui.error = `${name}에서 글자를 읽지 못했어요. 스캔한 이미지 PDF일 수 있어요.`; render(); return false; }
   ui.busy = `${name} 요약하는 중이에요`; ui.error = null; render();
   try {
     const content = text.slice(0, 120000);
-    const summary = await gemini((exam ? EXAM_PROMPT : LAB_PROMPT)(content), null);
-    S.docs.push({ id: uid(), kind: ui.docKind, subject: exam ? subject : '연구실', filename: name, summary, created_at: nowISO() });
+    let summary = await gemini(EXAM_PROMPT(content), null);
+    if (text.length > content.length) summary = `**앞부분만 요약했어요.** 자료가 길어서 앞쪽 12만 자까지만 읽었어요. 뒷부분이 필요하면 파일을 나눠서 올려 주세요.\n\n${summary}`;
+    S.docs.push({ id: uid(), kind: 'subject', subject, filename: name, summary, created_at: nowISO() });
     ui.busy = null; commit(); toast('요약했어요'); return true;
   } catch (e) { ui.busy = null; ui.error = `${name}: ${e instanceof AIError ? e.message : '요약하지 못했어요.'}`; render(); return false; }
 }
@@ -570,20 +619,37 @@ async function handleFiles(files) {
 
 const clickActions = {
   go: (el) => go(el.dataset.to),
-  done: (el) => { const t = S.tasks.find((x) => x.id === el.dataset.id); if (t) { completeTask(t); commit(); toast('끝냈어요'); } },
-  later: (el) => { const t = S.tasks.find((x) => x.id === el.dataset.id); if (t) { skipTask(t); commit(); toast('나중으로 미뤘어요'); } },
-  drop: (el) => { const t = S.tasks.find((x) => x.id === el.dataset.id); if (t) { t.status = 'dropped'; commit(); toast('뺐어요'); } },
+  done: (el) => { const t = S.tasks.find((x) => x.id === el.dataset.id); if (t) { ui.error = null; completeTask(t); commit(); toast('끝냈어요', () => reopenTask(t.id)); } },
+  later: (el) => { const t = S.tasks.find((x) => x.id === el.dataset.id); if (t) { ui.error = null; skipTask(t); commit(); toast('나중으로 미뤘어요'); } },
+  drop: (el) => { const t = S.tasks.find((x) => x.id === el.dataset.id); if (t) { ui.edit = null; ui.error = null; t.status = 'dropped'; commit(); toast('뺐어요', () => reopenTask(t.id)); } },
+  undo: () => { const f = undoFn; undoFn = null; document.getElementById('toast').classList.remove('on', 'undoable'); if (f) f(); },
+  reopen: (el) => { reopenTask(el.dataset.id); toast('할 일로 되돌렸어요'); },
+  edit: (el) => { ui.edit = el.dataset.id; ui.error = null; render(); window.scrollTo(0, 0); },
+  editdone: (el) => {
+    const t = S.tasks.find((x) => x.id === el.dataset.id);
+    if (t && !String(t.title).trim()) { toast('할 일 이름을 적어 주세요'); return; }
+    ui.edit = null; render();
+  },
   split: async (el) => {
     const t = S.tasks.find((x) => x.id === el.dataset.id); if (!t || ui.busy) return;
     ui.busy = '나누는 중이에요'; ui.error = null; render();
-    try { const steps = await aiSplit(t); replaceWithSteps(t, steps); ui.busy = null; commit(); toast(`${steps.length}단계로 나눴어요`); }
+    try {
+      const steps = await aiSplit(t);
+      ui.busy = null;
+      const cur = S.tasks.find((x) => x.id === t.id); // 기다리는 동안 끝냈거나 동기화로 바뀌었을 수 있다
+      if (!cur || cur.status !== 'open') { render(); return; }
+      replaceWithSteps(cur, steps); commit(); toast(`${steps.length}단계로 나눴어요`);
+    }
     catch (e) { ui.busy = null; ui.error = e instanceof AIError ? e.message : '나누지 못했어요. 잠시 뒤에 다시 시도해 주세요.'; render(); }
   },
   retry: () => { const p = S.dumps.filter((d) => d.status === 'pending'); if (p.length && !ui.busy) runSort(p.map((d) => d.raw).join('\n\n'), { dumpIds: p.map((d) => d.id) }); },
   delpark: (el) => { const p = S.parking.find((x) => x.id === el.dataset.id); if (p) { p.status = 'deleted'; commit(); } },
   sortpark: () => { const items = S.parking.filter((p) => p.status === 'open'); if (items.length && !ui.busy) runSort(items.map((i) => i.text).join('\n'), { source: 'parking', parkingIds: items.map((i) => i.id) }); },
-  plan: () => { planTomorrow(3); commit(); toast('내일 먼저 볼 일을 정했어요'); },
-  dockind: (el) => { ui.docKind = el.dataset.kind; ui.error = null; render(); },
+  plan: () => { planTomorrow(PLAN_N); commit(); toast('내일 먼저 볼 일을 정했어요'); },
+  plantask: (el) => { const t = S.tasks.find((x) => x.id === el.dataset.id); if (t && plannedTomorrow().length < PLAN_N) { t.planned_for = tomorrowISO(); commit(); } },
+  unplan: (el) => { const t = S.tasks.find((x) => x.id === el.dataset.id); if (t) { t.planned_for = null; commit(); } },
+  picknow: (el) => { const t = S.tasks.find((x) => x.id === el.dataset.id); if (t) { ui.error = null; t.pick_day = todayISO(); t.pick_at = Date.now(); commit(); window.scrollTo(0, 0); toast('지금 할 일을 바꿨어요'); } },
+  dumpview: (el) => { ui.dumpView = el.dataset.v; ui.error = null; render(); },
   deldoc: (el) => { const d = S.docs.find((x) => x.id === el.dataset.id); if (d) { d.deleted = true; commit(); } },
   newcode: () => { const a = new Uint8Array(12); crypto.getRandomValues(a); CFG.code = Array.from(a, (b) => b.toString(16).padStart(2, '0')).join(''); saveCfg(); render(); },
   syncnow: () => { ui.sync = ''; ui.syncErr = ''; if (!syncOn()) { ui.syncErr = '주소(https://로 시작), 키, 16자 이상의 코드를 모두 넣어 주세요.'; render(); } else { ui.sync = '맞추는 중이에요…'; render(); sync(); } },
@@ -621,8 +687,10 @@ document.addEventListener('change', async (e) => {
   if (t.matches('[data-paper-pdf]') && t.files.length) { const f = t.files[0]; t.value = ''; labPdf(f); return; }
   if (t.matches('[data-doc]') && t.files.length) { const fs = Array.from(t.files); t.value = ''; handleFiles(fs); }
   if (t.matches('[data-import]') && t.files.length) {
+    const file = t.files[0]; t.value = '';
     try {
-      const data = normalize(JSON.parse(await t.files[0].text()));
+      const data = normalize(JSON.parse(await file.text()));
+      if (!COLS.some((k) => data[k].length) || !COLS.every((k) => data[k].every((x) => x && x.id))) throw new Error('bad');
       if (!confirm('이 기기의 내용을 파일 내용으로 덮어쓸까요?')) return;
       snap = new Map(); S = data; commit(); toast('가져왔어요');
     } catch (err) { toast('파일을 읽지 못했어요'); }
@@ -644,17 +712,25 @@ document.addEventListener('submit', (e) => {
     S.dumps.push({ id, raw, status: 'pending', summary: '', created_at: nowISO() });
     S.rev = Date.now(); storageOk = lsSet(LS_STATE, JSON.stringify(S));
     runSort(raw, { dumpIds: [id] });
+  } else if (kind === 'taskadd') {
+    const title = String(fd.get('title') || '').trim();
+    if (!title) { toast('할 일을 먼저 적어 주세요'); return; }
+    addTasks([{ title, due: String(fd.get('due') || '') || null }], 'manual');
+    ui.draft.addtitle = ''; ui.draft.adddue = ''; commit(); toast('할 일에 넣었어요');
   } else if (labSubmit(kind, fd)) {
     /* 연구실 */
   } else if (kind === 'doctext') {
-    const text = String(fd.get('text') || ''); if (text.trim()) summarize('붙여 넣은 글', text);
+    const text = String(fd.get('text') || ''); if (text.trim()) summarize('붙여 넣은 글', text).then((ok) => { if (ok) { ui.draft.doctext = ''; renderSoon(); } });
   }
 });
 
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') sync(); });
-window.addEventListener('online', () => { sync(); });
-window.addEventListener('focus', () => { sync(); });
-setInterval(() => { if (document.visibilityState === 'visible') sync(); }, 45000);
+// 앱을 켜 둔 채 날짜가 넘어가면 '오늘' 화면을 새로 그린다.
+let shownDay = todayISO();
+function wake() { if (shownDay !== todayISO()) { shownDay = todayISO(); renderSoon(); } sync(); }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') wake(); });
+window.addEventListener('online', wake);
+window.addEventListener('focus', wake);
+setInterval(() => { if (document.visibilityState === 'visible') wake(); }, 45000);
 try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
 
 render();

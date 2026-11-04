@@ -24,10 +24,11 @@ const FL_VERS = [['2023R1', '2023R1 (라이선스 있음)', '2023R1'], ['2026R1S
 const verShort = (v) => (FL_VERS.find((x) => x[0] === v) || [0, 0, ''])[2];
 const verTag = (v) => (v ? `<span class="tag ${v === '2026R1S' ? 'bad' : 'ok'}">${esc(verShort(v))}</span>` : '<span class="tag bad">버전 미선택</span>');
 const verOptions = (cur) => `<option value="">버전 선택</option>` + FL_VERS.map(([k, l]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
-function verNote(v, prevVer) {
+function verNote(v, prevVer, tutVer) {
   let out = '';
   if (v === '2026R1S') out += '<div class="note">학생용 버전이에요. 라이선스 제한(격자 규모·기능 등)이 있을 수 있어요. 이 버전에서 막히는 게 있으면 기록해 두고, 정식 라이선스가 있는 2023R1이나 학교 클러스터에서 돌려도 되는지 확인하세요.</div>';
   if (prevVer && v && prevVer !== v) out += `<div class="note">이전 케이스는 ${esc(verShort(prevVer))}로 돌렸어요. 버전이 다르면 메뉴·기본 설정·결과가 달라질 수 있으니, 비교할 때 주의하세요.</div>`;
+  if (tutVer && v && tutVer !== v) out += `<div class="note">이 튜토리얼은 ${esc(verShort(tutVer))}로 기록돼 있어요. 케이스와 버전이 달라서 메뉴·기본 설정이 튜토리얼과 다를 수 있어요.</div>`;
   return out;
 }
 
@@ -156,7 +157,7 @@ async function labPdf(file) {
   try {
     const r = await gemini(PAPER_PROMPT(text.slice(0, 100000)), PAPER_SCHEMA);
     const f = {};
-    PAPER_FIELDS.forEach((pf) => { f[pf.k] = r[pf.k] ? String(r[pf.k]) : ''; });
+    PAPER_FIELDS.forEach((pf) => { const v = r[pf.k] ? String(r[pf.k]) : ''; f[pf.k] = pf.opts && !pf.opts.includes(v) ? '' : v; });
     const p = newPaper({ title: r.title || file.name.replace(/\.pdf$/i, ''), authors: r.authors || '', year: r.year ? String(r.year) : '', f });
     S.papers.push(p); ui.paper = p.id; ui.busy = null; commit(); toast('초안을 채웠어요. 모든 값은 미확인이에요');
   } catch (e) { ui.busy = null; ui.error = e instanceof AIError ? e.message : '초안을 만들지 못했어요.'; render(); }
@@ -287,7 +288,7 @@ function caseEditor(c) {
   const locked = !hasPred(c);
   let out = `<button class="btn small" data-act="caseback">← 목록</button><div class="gap"></div>
 <label class="field" for="c-name">케이스 이름</label><input id="c-name" type="text" ${b('name')} value="${esc(c.name)}">
-<label class="field" for="c-ver">Fluent 버전</label><select id="c-ver" ${b('ver')}>${verOptions(c.ver)}</select>${verNote(c.ver, (getBy('cases', c.prev) || {}).ver)}
+<label class="field" for="c-ver">Fluent 버전</label><select id="c-ver" ${b('ver')}>${verOptions(c.ver)}</select>${verNote(c.ver, (getBy('cases', c.prev) || {}).ver, (getBy('tuts', c.tut) || {}).ver)}
 <label class="field" for="c-tut">따라 하는 튜토리얼</label><select id="c-tut" ${b('tut')}><option value="">없음</option>${live('tuts').map((t) => `<option value="${t.id}" ${t.id === c.tut ? 'selected' : ''}>${esc(t.name || '이름 없음')}</option>`).join('')}</select>
 <label class="field" for="c-prev">이전 케이스</label><select id="c-prev" ${b('prev')}><option value="">없음</option>${others.map((o) => `<option value="${o.id}" ${o.id === c.prev ? 'selected' : ''}>${esc(o.name || '이름 없음')}</option>`).join('')}</select>
 <label class="field" for="c-chg">이전 케이스와 바뀐 점</label><textarea id="c-chg" style="min-height:80px" ${b('changes')}>${esc(c.changes)}</textarea>`;
